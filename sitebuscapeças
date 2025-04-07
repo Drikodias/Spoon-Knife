@@ -1,0 +1,94 @@
+CREATE TABLE veiculos (
+    id SERIAL PRIMARY KEY,
+    marca VARCHAR(50) NOT NULL,  -- Ex: "Fiat"
+    modelo VARCHAR(50) NOT NULL, -- Ex: "Palio Adventure"
+    ano_inicio INTEGER,          -- Ex: 2019
+    ano_fim INTEGER,             -- Ex: 2023
+    motor VARCHAR(50)            -- Ex: "1.8 E.torQ Flex"
+);
+CREATE TABLE pecas (
+    id SERIAL PRIMARY KEY,
+    nome VARCHAR(100) NOT NULL,  -- Ex: "Junta do cabeçote"
+    codigo_original VARCHAR(50), -- Ex: "71760305" (código Fiat)
+    codigo_equivalente VARCHAR(50), -- Ex: "GK179" (Mahle)
+    categoria VARCHAR(50)        -- Ex: "Motor"
+);
+CREATE TABLE compatibilidade (
+    id SERIAL PRIMARY KEY,
+    peca_id INTEGER REFERENCES pecas(id),
+    veiculo_id INTEGER REFERENCES veiculos(id)
+);
+CREATE TABLE fornecedores (
+    id SERIAL PRIMARY KEY,
+    nome VARCHAR(100) NOT NULL,
+    preco DECIMAL(10, 2),
+    estoque INTEGER,
+    peca_id INTEGER REFERENCES pecas(id)
+);
+// GET /api/pecas?marca=fiat&modelo=palio&ano=2019&motor=1.8
+app.get('/api/pecas', async (req, res) => {
+    const { marca, modelo, ano, motor } = req.query;
+
+    const query = `
+        SELECT p.* FROM pecas p
+        JOIN compatibilidade c ON p.id = c.peca_id
+        JOIN veiculos v ON c.veiculo_id = v.id
+        WHERE v.marca = $1 AND v.modelo = $2 
+        AND $3 BETWEEN v.ano_inicio AND v.ano_fim
+        AND v.motor = $4
+    `;
+
+    const result = await pool.query(query, [marca, modelo, ano, motor]);
+    res.json(result.rows);
+});
+// GET /api/pecas/codigo?codigo=71760305
+app.get('/api/pecas/codigo', async (req, res) => {
+    const { codigo } = req.query;
+    const query = `
+        SELECT p.*, v.marca, v.modelo 
+        FROM pecas p
+        LEFT JOIN compatibilidade c ON p.id = c.peca_id
+        LEFT JOIN veiculos v ON c.veiculo_id = v.id
+        WHERE p.codigo_original = $1 OR p.codigo_equivalente = $1
+    `;
+    const result = await pool.query(query, [codigo]);
+    res.json(result.rows);
+});
+CREATE INDEX idx_pecas_codigo ON pecas(codigo_original, codigo_equivalente);
+CREATE INDEX idx_veiculos_modelo ON veiculos(marca, modelo);
+const redis = require('redis');
+const client = redis.createClient();
+
+app.get('/api/pecas', async (req, res) => {
+    const cacheKey = JSON.stringify(req.query);
+    client.get(cacheKey, async (err, cachedData) => {
+        if (cachedData) return res.json(JSON.parse(cachedData));
+
+        // Consulta ao banco (exemplo anterior)
+        const result = await pool.query(...);
+        client.setex(cacheKey, 3600, JSON.stringify(result.rows)); // Cache por 1h
+        res.json(result.rows);
+    });
+});
+import React, { useState } from 'react';
+
+function BuscaPecas() {
+    const [pecas, setPecas] = useState([]);
+    const [filtros, setFiltros] = useState({ marca: '', modelo: '', ano: '' });
+
+    const buscarPecas = async () => {
+        const response = await fetch(
+            `/api/pecas?marca=${filtros.marca}&modelo=${filtros.modelo}&ano=${filtros.ano}`
+        );
+        const data = await response.json();
+        setPecas(data);
+    };
+
+    return (
+        <div>
+            <input placeholder="Marca" onChange={(e) => setFiltros({...filtros, marca: e.target.value})} />
+            <button onClick={buscarPecas}>Buscar</button>
+            {pecas.map(peca => <div key={peca.id}>{peca.nome}</div>)}
+        </div>
+    );
+}
